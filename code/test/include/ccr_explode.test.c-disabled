@@ -1,0 +1,160 @@
+#include "ccr_explode.h"
+#include "ccr_init.h"
+#include "customMacros.h"
+#include "log_explode.h"
+#include <check.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "conf_log.h"
+
+#define CCR_EXPLODELEN 17
+#define CCR_INSTANCES 3
+
+void initTestData(ccr_s * ccr, ui32 L){
+	ui32 k,l;
+
+	for (l=0; l<L; l++){
+		for (k=0;k<CONF_NUMCHN;k++){
+			ccr[l].ctr[k].prn 					= 100 + k + l*50;
+			ccr[l].ctr[k].newPrn 				= k % 2;
+			ccr[l].ctr[k].blkSize 			= 300 + 3*k + l*50;
+			ccr[l].ctr[k].carrFreq 			= 400.4 + 4*k + l*50;
+			ccr[l].ctr[k].codeFreq 			= 500.5 + 5*k + l*50;
+			ccr[l].ctr[k].newFreq 			= (k+l) % 2;
+			ccr[l].ctr[k].remCarrPhase 	= 700 + 6*k + l*50;
+			ccr[l].ctr[k].remCodePhase 	= 800 + 7*k + l*50;
+			ccr[l].ctr[k].startSample 	= 900 + 8*k + l*50;
+
+			ccr[l].res[k].EI 						= -100 - 1*k - l*50;
+			ccr[l].res[k].EQ 						= -200 - 2*k - l*50;
+			ccr[l].res[k].PI 						= -300 - 3*k - l*50;
+			ccr[l].res[k].PQ 						= -400 - 4*k - l*50;
+			ccr[l].res[k].LI 						= -500 - 5*k - l*50;
+			ccr[l].res[k].LQ 						= -600 - 6*k - l*50;
+			ccr[l].res[k].newCorr 			= (k-l) % 2;
+		}
+	}
+	return;
+}
+
+int writeTestData(ccr_s * ccr, ui32 K, char * fileNameBase){
+	/// Clear all known fields
+	char fileName[MAX_LEN_FILENAME];
+	snprintf(fileName, MAX_LEN_FILENAME, "%s/%s.bin", CONF_LOG_PATH, fileNameBase);
+	FILE * fd = fopen(fileName, "w");
+	if(fd == NULL){
+		printf("\n fopen() Error when opening '%s'! \n",fileName);
+		return EXIT_FAILURE;
+	}
+	fwrite(ccr, sizeof(ccr_s), K, fd);
+	fclose(fd);
+	return EXIT_SUCCESS;
+}
+
+int readTestData(ccr_s * ccr, ui32 L, char * fileNameBase){
+	ui32 c,C;																						/// c is ctr index, C is number of ctr fields
+	ui32 r,R;																						/// r is res index, R is number of res fields
+	ui32 k, l, ret;																			/// k&l general counter, ret return value for fopen
+	char fileName[MAX_LEN_FILENAME];
+	/// Figure out the number of rows of the ctr and res fields
+	C = 0;
+	#define X(a,b,c) C++;
+		CCR_CTR_FIELDS
+	#undef X
+	R = 0;
+	#define X(a,c) R++;
+		RES_FIELDS
+	#undef X
+
+	// Open files for reading
+	ret = 0;
+	FILE * fdC[C];
+	c = 0;
+	snprintf(fileName,MAX_LEN_FILENAME,"%s_ctr",fileNameBase);
+	#define X(type, format, name) \
+		fopenLogs(&ret, &fdC[c++], fileName, #name, #type,"r");
+		CCR_CTR_FIELDS
+	#undef X
+	FILE * fdR[R];
+	r = 0;
+	snprintf(fileName,MAX_LEN_FILENAME,"%s_res",fileNameBase);
+	#define X(type, name) \
+		fopenLogs(&ret, &fdR[r++], fileName, #name, #type,"r");
+		RES_FIELDS
+	#undef X
+	if (ret>0){
+		fprintf(stderr,"Failed to open at least one log file");
+		return EXIT_FAILURE;
+	}
+
+	/// Read individual files
+	for (l=0; l<L; l++){
+		for (k=0; k<CONF_NUMCHN; k++){										/// Loop over all channels
+			c=0;																						/// Initialize index for fdCtr
+			#define X(type,p,name) \
+				if(fread(&ccr[l].ctr[k].name,sizeof(type),1,fdC[c++]) == 0) return EXIT_FAILURE;
+				CCR_CTR_FIELDS																/// Write to each ccr_ctr file
+			#undef X 																				/// Standard practice to undefine X
+			r=0;																						/// Initialize index for fdRes
+			#define X(type,name) \
+				if(fread(&ccr[l].res[k].name,sizeof(type),1,fdR[r++]) == 0) return EXIT_FAILURE;
+				RES_FIELDS																/// Write to each ccr_ctr file
+			#undef X 																				/// Standard practice to undefine X
+		}
+	}
+	/// Close all files
+	for (c=0; c<C; c++)	fclose(fdC[c]);								/// ccr_ctr_xxx files
+	for (r=0; r<R; r++)	fclose(fdR[r]);								/// ccr_res_xxx files
+	return EXIT_SUCCESS;
+}
+
+int ccr_validateData(ccr_s * ccr1, ccr_s * ccr2, ui32 K){
+	ck_assert(memcmp(ccr1,ccr2,K*sizeof(ccr_s)) == 0);
+	return EXIT_SUCCESS;
+}
+
+START_TEST (fun)
+{
+	/// Allocate two ccr, one that we write to disk and one that we populate when we read from disk
+	ccr_s ccr1[CCR_EXPLODELEN];
+	memset(&ccr1, 0, CCR_EXPLODELEN*sizeof(ccr_s));						/// Make sure all is set to zero
+	ccr_s ccr2[CCR_EXPLODELEN];
+	memset(&ccr2, 0, CCR_EXPLODELEN*sizeof(ccr_s));						/// Make sure all is set to zero
+	purgeLogFiles("ccrTest");
+	initTestData(ccr1,CCR_EXPLODELEN);
+	if (writeTestData(ccr1, CCR_EXPLODELEN,"ccrTest") == EXIT_FAILURE){
+		printf("---      Failed when writing to disk in writeTestData\n");
+		ck_assert(false);
+	}
+	ccr_explode("ccrTest");
+	if (readTestData(ccr2,CCR_EXPLODELEN,"ccrTest") == EXIT_FAILURE){
+		printf("---      Failed when reading from disk in readTestData() \n");
+		ck_assert(false);
+	}
+	ccr_validateData(ccr1, ccr2, CCR_EXPLODELEN);
+	purgeLogFiles("ccrTest");
+}
+END_TEST
+
+Suite * test_suite(void) {
+    Suite * s;
+    TCase * tc_core;
+    s = suite_create("Test ccr_explode");
+    tc_core = tcase_create("Core");
+    tcase_set_timeout(tc_core,10);
+    tcase_add_test(tc_core, fun);
+    suite_add_tcase(s, tc_core);
+    return s;
+}
+
+si32 main(void) {
+    si32 number_failed = 0;
+    Suite * s;
+    SRunner * sr;
+    s = test_suite();
+    sr = srunner_create(s);
+    srunner_run_all(sr, CK_NORMAL);
+    number_failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+    return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
